@@ -1,0 +1,49 @@
+# Binaries
+/cmd/archon/archon
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+
+# Output directory
+/bin/
+/build/
+/dist/
+
+# Dependency directories
+vendor/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS-specific
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# C/C++ build artifacts
+*.o
+*.obj
+*.a
+*.lib
+
+# Models
+/assets/models/*
+!/assets/models/.gitkeep
+
+# State/DBs
+/internal/state/*.db
+/internal/state/*.sqlite
