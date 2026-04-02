@@ -1,9 +1,9 @@
 package arch
 
 import (
-	"archon/internal/inference" // ADDED
-	"archon/internal/parser/treesitter"
+	"archon/internal/inference"
 	"archon/internal/tools/filesystem"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -11,11 +11,11 @@ import (
 // Agent represents our local coding assistant
 type Agent struct {
 	FileTool *filesystem.FileTool
-	Engine   *inference.LlamaEngine // ADDED
+	Engine   *inference.LlamaEngine
 }
 
 // NewAgent initializes the FileTool and the Inference Engine
-func NewAgent(projectRoot string, modelPath string) (*Agent, error) { // UPDATED signature
+func NewAgent(projectRoot string, modelPath string) (*Agent, error) {
 	ft, err := filesystem.NewFileTool(projectRoot)
 	if err != nil {
 		return nil, err
@@ -46,61 +46,87 @@ func (a *Agent) Close() {
 func (a *Agent) Orchestrate(targetFile string, userPrompt string) error {
 	fmt.Printf("[Agent] Received task: '%s' on %s\n", userPrompt, targetFile)
 
-	// 1. ANALYSIS (The Eyes)
-	fmt.Println("[Agent] Step 1: Analyzing file structure...")
-	blocks, err := treesitter.ExtractGoFunctions(targetFile)
+	// 1. ANALYSIS (The Eyes - Universal Reading)
+	fmt.Println("[Agent] Step 1: Reading entire file context...")
+	fileContent, err := a.FileTool.ReadFile(targetFile)
 	if err != nil {
-		return fmt.Errorf("failed to analyze file: %v", err)
+		return fmt.Errorf("failed to read target file: %v", err)
 	}
-
-	var targetBlock treesitter.CodeBlock
-	for _, b := range blocks {
-		if b.Name == "Start" {
-			targetBlock = b
-			break
-		}
-	}
-
-	if targetBlock.Content == "" {
-		return fmt.Errorf("could not find target function in file")
-	}
-	fmt.Printf("[Agent] Found target block: %s\n", targetBlock.Name)
 
 	// 2. PLANNING & GENERATION (The Brain)
-	fmt.Println("[Agent] Step 2: Querying LLM for refactor...")
+	fmt.Println("[Agent] Step 2: Querying LLM for Search/Replace block...")
 
-	// Construct a strict system prompt to force the model to ONLY output code
+	// The Universal Cursor-style System Prompt
 	llmPrompt := fmt.Sprintf(`<|im_start|>system
-You are Archon, an expert Go developer. You will be given a code block and a requested change. 
-Return ONLY the modified code block. Do not include markdown formatting, explanations, or comments outside the code.<|im_end|>
+You are Archon, an expert AI coding assistant.
+You will be given the entire current file content and a user request.
+You must fulfill the user's request by outputting exactly ONE search and replace block.
+
+RULES:
+1. The SEARCH block MUST match the existing file content EXACTLY, character for character, including indentation.
+2. The REPLACE block contains the new code.
+3. Use the following strict format:
+
+<<<<SEARCH
+[exact old code to replace]
+====
+[new code to insert]
+>>>>REPLACE<|im_end|>
 <|im_start|>user
-Original Code:
+File Context:
 %s
 
 Request: %s<|im_end|>
 <|im_start|>assistant
-`, targetBlock.Content, userPrompt)
+`, fileContent, userPrompt)
 
-	// Ask the model to generate the new code (max 256 tokens for this small edit)
-	generatedCode, err := a.Engine.Generate(llmPrompt, 256)
+	// We use 1024 tokens now because universal edits might be larger
+	generatedCode, err := a.Engine.Generate(llmPrompt, 1024)
 	if err != nil {
 		return fmt.Errorf("LLM generation failed: %v", err)
 	}
 
-	// Clean up the output (sometimes models add trailing spaces or markdown despite instructions)
-	cleanCode := strings.TrimSpace(generatedCode)
-	cleanCode = strings.TrimPrefix(cleanCode, "```go")
-	cleanCode = strings.TrimSuffix(cleanCode, "```")
+	fmt.Printf("\n--- LLM RAW OUTPUT ---\n%s\n----------------------\n\n", generatedCode)
 
-	fmt.Printf("\n--- LLM SUGGESTED EDIT ---\n%s\n--------------------------\n\n", cleanCode)
+	// 3. PARSING
+	searchBlock, replaceBlock, err := parseSearchReplace(generatedCode)
+	if err != nil {
+		return fmt.Errorf("failed to parse SEARCH/REPLACE block: %v", err)
+	}
 
-	// 3. EXECUTION (The Hands)
-	fmt.Println("[Agent] Step 3: Applying surgical edit...")
-	err = a.FileTool.SurgicalEdit(targetFile, targetBlock.Content, cleanCode)
+	// 4. EXECUTION (The Hands)
+	fmt.Println("[Agent] Step 3: Applying universal surgical edit...")
+	err = a.FileTool.SurgicalEdit(targetFile, searchBlock, replaceBlock)
 	if err != nil {
 		return fmt.Errorf("failed to apply edit: %v", err)
 	}
 
 	fmt.Println("[Agent] Task completed successfully!")
 	return nil
+}
+
+// parseSearchReplace extracts the exact code from the LLM's formatted output
+func parseSearchReplace(output string) (string, string, error) {
+	searchMarker := "<<<<SEARCH"
+	dividerMarker := "===="
+	replaceMarker := ">>>>REPLACE"
+
+	startIdx := strings.Index(output, searchMarker)
+	divIdx := strings.Index(output, dividerMarker)
+	endIdx := strings.Index(output, replaceMarker)
+
+	if startIdx == -1 || divIdx == -1 || endIdx == -1 {
+		return "", "", errors.New("LLM did not output proper SEARCH/REPLACE formatting markers")
+	}
+
+	// Extract the blocks and trim the leading/trailing newlines added by the formatting
+	searchBlock := output[startIdx+len(searchMarker) : divIdx]
+	replaceBlock := output[divIdx+len(dividerMarker) : endIdx]
+
+	searchBlock = strings.TrimPrefix(searchBlock, "\n")
+	searchBlock = strings.TrimSuffix(searchBlock, "\n")
+	replaceBlock = strings.TrimPrefix(replaceBlock, "\n")
+	replaceBlock = strings.TrimSuffix(replaceBlock, "\n")
+
+	return searchBlock, replaceBlock, nil
 }

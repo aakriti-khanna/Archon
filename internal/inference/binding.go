@@ -2,7 +2,7 @@ package inference
 
 /*
 #cgo CFLAGS: -I./llama/include -I./llama/ggml/include -I./llama/common -I./llama
-#cgo LDFLAGS: -L./llama/build/src -L./llama/build/ggml/src -L./llama/build/ggml/src/ggml-metal -L./llama/build/ggml/src/ggml-blas -L./llama/build -lllama -lggml -lggml-base -lggml-cpu -lggml-metal -lggml-blas -lstdc++ -framework Foundation -framework Metal -framework MetalKit -framework Accelerate
+#cgo LDFLAGS: -L./llama/build/bin -L./llama/build/src -L./llama/build/ggml/src -L./llama/build/ggml/src/ggml-metal -L./llama/build/ggml/src/ggml-blas -L./llama/build -lllama -lggml -lggml-base -lggml-cpu -lggml-metal -lggml-blas -lstdc++ -framework Foundation -framework Metal -framework MetalKit -framework Accelerate
 #include "llama.h"
 #include <stdlib.h>
 */
@@ -35,6 +35,7 @@ func LoadModel(modelPath string) (*LlamaEngine, error) {
 
 	// Get default model parameters
 	mParams := C.llama_model_default_params()
+	mParams.n_gpu_layers = C.int(99)
 
 	// UPDATED: Use the modern API for loading the model
 	model := C.llama_model_load_from_file(cModelPath, mParams)
@@ -44,6 +45,7 @@ func LoadModel(modelPath string) (*LlamaEngine, error) {
 
 	// Get default context parameters
 	cParams := C.llama_context_default_params()
+	cParams.n_ctx = C.uint32_t(8192)
 
 	// UPDATED: Use the modern API for context initialization
 	ctx := C.llama_init_from_model(model, cParams)
