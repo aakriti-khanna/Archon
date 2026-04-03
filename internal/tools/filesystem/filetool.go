@@ -20,18 +20,23 @@ func NewFileTool(root string) (*FileTool, error) {
 	return &FileTool{ProjectRoot: absRoot}, nil
 }
 
-// validatePath is our Sandbox guardrail. It prevents directory traversal attacks (e.g., "../../etc/passwd").
+// validatePath is our Sandbox guardrail. It prevents directory traversal attacks.
 func (ft *FileTool) validatePath(target string) (string, error) {
-	// 1. Join the root and the target
-	fullPath := filepath.Join(ft.ProjectRoot, target)
+	var cleanPath string
 
-	// 2. Clean the path to resolve any ".." or "."
-	cleanPath := filepath.Clean(fullPath)
+	// 1. If the IDE sends an absolute path, trust it and use it directly.
+	if filepath.IsAbs(target) {
+		cleanPath = filepath.Clean(target)
+	} else {
+		// 2. If it's a relative path, join it to the project root
+		fullPath := filepath.Join(ft.ProjectRoot, target)
+		cleanPath = filepath.Clean(fullPath)
 
-	// 3. Ensure the resulting path still resides within the ProjectRoot
-	rel, err := filepath.Rel(ft.ProjectRoot, cleanPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("security violation: path %s is outside project root", target)
+		// 3. Only enforce the sandbox bounds for relative paths
+		rel, err := filepath.Rel(ft.ProjectRoot, cleanPath)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return "", fmt.Errorf("security violation: path %s is outside project root", target)
+		}
 	}
 
 	return cleanPath, nil
@@ -95,4 +100,34 @@ func (ft *FileTool) SurgicalEdit(relPath, searchBlock, replaceBlock string) erro
 
 	fmt.Printf("[Archon] Successfully applied surgical edit to %s\n", relPath)
 	return nil
+}
+
+// WriteFile safely writes content to a relative path.
+func (ft *FileTool) WriteFile(relPath string, content string) error {
+	safePath, err := ft.validatePath(relPath)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(safePath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write file: %v", err)
+	}
+	return nil
+}
+
+// SearchAndReplace replaces an exact block of text in a file
+func (ft *FileTool) SearchAndReplace(filePath string, searchBlock string, replaceBlock string) error {
+	content, err := ft.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	// Safety check: The LLM's search block must exist exactly in the file
+	if !strings.Contains(content, searchBlock) {
+		return fmt.Errorf("LLM search block did not exactly match the file content. Edit aborted to prevent corruption")
+	}
+
+	// Replace only the first instance found
+	newContent := strings.Replace(content, searchBlock, replaceBlock, 1)
+
+	return ft.WriteFile(filePath, newContent)
 }

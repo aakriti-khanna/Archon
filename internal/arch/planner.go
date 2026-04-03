@@ -5,6 +5,7 @@ import (
 	"archon/internal/tools/filesystem"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -42,21 +43,19 @@ func (a *Agent) Close() {
 	inference.FreeSystem()
 }
 
-// Orchestrate runs the core execution loop: Analyze -> Plan -> Generate -> Edit
 func (a *Agent) Orchestrate(targetFile string, userPrompt string) error {
-	fmt.Printf("[Agent] Received task: '%s' on %s\n", userPrompt, targetFile)
+	// Notice we use log.Printf instead of fmt.Printf!
+	log.Printf("[Agent] Received task: '%s' on %s\n", userPrompt, targetFile)
 
-	// 1. ANALYSIS (The Eyes - Universal Reading)
-	fmt.Println("[Agent] Step 1: Reading entire file context...")
+	// 1. ANALYSIS
+	log.Println("[Agent] Step 1: Reading entire file context...")
 	fileContent, err := a.FileTool.ReadFile(targetFile)
 	if err != nil {
 		return fmt.Errorf("failed to read target file: %v", err)
 	}
 
-	// 2. PLANNING & GENERATION (The Brain)
-	fmt.Println("[Agent] Step 2: Querying LLM for Search/Replace block...")
-
-	// The Universal Cursor-style System Prompt
+	// 2. PLANNING & GENERATION
+	log.Println("[Agent] Step 2: Querying LLM for Search/Replace block...")
 	llmPrompt := fmt.Sprintf(`<|im_start|>system
 You are Archon, an expert AI coding assistant.
 You will be given the entire current file content and a user request.
@@ -80,13 +79,13 @@ Request: %s<|im_end|>
 <|im_start|>assistant
 `, fileContent, userPrompt)
 
-	// We use 1024 tokens now because universal edits might be larger
 	generatedCode, err := a.Engine.Generate(llmPrompt, 1024)
 	if err != nil {
 		return fmt.Errorf("LLM generation failed: %v", err)
 	}
 
-	fmt.Printf("\n--- LLM RAW OUTPUT ---\n%s\n----------------------\n\n", generatedCode)
+	// Print raw output safely to Stderr via log
+	log.Printf("\n--- LLM RAW OUTPUT ---\n%s\n----------------------\n\n", generatedCode)
 
 	// 3. PARSING
 	searchBlock, replaceBlock, err := parseSearchReplace(generatedCode)
@@ -94,14 +93,14 @@ Request: %s<|im_end|>
 		return fmt.Errorf("failed to parse SEARCH/REPLACE block: %v", err)
 	}
 
-	// 4. EXECUTION (The Hands)
-	fmt.Println("[Agent] Step 3: Applying universal surgical edit...")
-	err = a.FileTool.SurgicalEdit(targetFile, searchBlock, replaceBlock)
+	// 4. EXECUTION (Using the new universal tool!)
+	log.Println("[Agent] Step 3: Applying universal surgical edit...")
+	err = a.FileTool.SearchAndReplace(targetFile, searchBlock, replaceBlock)
 	if err != nil {
 		return fmt.Errorf("failed to apply edit: %v", err)
 	}
 
-	fmt.Println("[Agent] Task completed successfully!")
+	log.Println("[Agent] Task completed successfully!")
 	return nil
 }
 

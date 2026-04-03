@@ -13,7 +13,7 @@ func main() {
 	// Define the --serve flag
 	serveMode := flag.Bool("serve", false, "Start Archon in JSON-RPC server mode for IDEs")
 	flag.Parse()
-
+	log.SetOutput(os.Stderr)
 	// 1. Setup paths
 	currentDir, _ := os.Getwd()
 	modelPath := "./assets/models/qwen2.5-coder-7b.gguf"
