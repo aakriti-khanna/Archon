@@ -3,9 +3,9 @@ package arch
 import (
 	"archon/internal/inference"
 	"archon/internal/tools/filesystem"
-	"errors"
 	"fmt"
-	"log"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -22,7 +22,7 @@ func NewAgent(projectRoot string, modelPath string) (*Agent, error) {
 		return nil, err
 	}
 
-	fmt.Println("[System] Booting Llama.cpp Engine...")
+	fmt.Fprintln(os.Stderr, "[System] Booting Llama.cpp Engine...")
 	inference.InitSystem()
 	engine, err := inference.LoadModel(modelPath)
 	if err != nil {
@@ -43,89 +43,125 @@ func (a *Agent) Close() {
 	inference.FreeSystem()
 }
 
+// Orchestrate runs the core execution loop
 func (a *Agent) Orchestrate(targetFile string, userPrompt string) error {
-	// Notice we use log.Printf instead of fmt.Printf!
-	log.Printf("[Agent] Received task: '%s' on %s\n", userPrompt, targetFile)
+	fmt.Fprintf(os.Stderr, "[Agent] Received task: '%s' on %s\n", userPrompt, targetFile)
 
 	// 1. ANALYSIS
-	log.Println("[Agent] Step 1: Reading entire file context...")
+	fmt.Fprintln(os.Stderr, "[Agent] Step 1: Reading active file context...")
 	fileContent, err := a.FileTool.ReadFile(targetFile)
 	if err != nil {
-		return fmt.Errorf("failed to read target file: %v", err)
+		fileContent = "" // If the file doesn't exist yet, don't fail, just proceed
 	}
 
 	// 2. PLANNING & GENERATION
-	log.Println("[Agent] Step 2: Querying LLM for Search/Replace block...")
+	fmt.Fprintln(os.Stderr, "[Agent] Step 2: Querying LLM for code generation...")
+
 	llmPrompt := fmt.Sprintf(`<|im_start|>system
-You are Archon, an expert AI coding assistant.
-You will be given the entire current file content and a user request.
-You must fulfill the user's request by outputting exactly ONE search and replace block.
+You are Archon, a highly focused AI coding assistant.
+The user is currently working in: %s
 
-RULES:
-1. The SEARCH block MUST match the existing file content EXACTLY, character for character, including indentation.
-2. The REPLACE block contains the new code.
-3. Use the following strict format:
+Your ONLY task is to fulfill the user's request.
+You must output the target filename on the FIRST line, followed by the ENTIRE updated or new file content wrapped in a markdown code block.
 
-<<<<SEARCH
-[exact old code to replace]
-====
-[new code to insert]
->>>>REPLACE<|im_end|>
+If the user asks to create a new file, output that new filename. Otherwise, output the original filename.
+
+STRICT FORMAT:
+FILE: <filename>
+`+"```"+`
+<complete file code here>
+`+"```"+`
+<|im_end|>
 <|im_start|>user
-File Context:
+Current File Context:
 %s
 
 Request: %s<|im_end|>
 <|im_start|>assistant
-`, fileContent, userPrompt)
+FILE: `, targetFile, fileContent, userPrompt)
 
-	generatedCode, err := a.Engine.Generate(llmPrompt, 1024)
+	generatedCode, err := a.Engine.Generate(llmPrompt, 2048)
 	if err != nil {
 		return fmt.Errorf("LLM generation failed: %v", err)
 	}
 
-	// Print raw output safely to Stderr via log
-	log.Printf("\n--- LLM RAW OUTPUT ---\n%s\n----------------------\n\n", generatedCode)
+	if strings.TrimSpace(generatedCode) == "" {
+		return fmt.Errorf("LLM failed to generate a response")
+	}
+
+	// Because we prefilled "FILE: " in the prompt, the output will start immediately with the filename
+	fullOutput := "FILE: " + strings.TrimSpace(generatedCode)
+
+	fmt.Fprintf(os.Stderr, "\n--- LLM RAW OUTPUT ---\n%s\n----------------------\n\n", fullOutput)
 
 	// 3. PARSING
-	searchBlock, replaceBlock, err := parseSearchReplace(generatedCode)
+	filename, newFileContent, err := parseFileResponse(fullOutput)
 	if err != nil {
-		return fmt.Errorf("failed to parse SEARCH/REPLACE block: %v", err)
+		return err
 	}
 
-	// 4. EXECUTION (Using the new universal tool!)
-	log.Println("[Agent] Step 3: Applying universal surgical edit...")
-	err = a.FileTool.SearchAndReplace(targetFile, searchBlock, replaceBlock)
-	if err != nil {
-		return fmt.Errorf("failed to apply edit: %v", err)
+	// Resolve the absolute path for the target file dynamically
+	dir := filepath.Dir(targetFile)
+	finalPath := filepath.Join(dir, filepath.Base(filename))
+
+	// 4. EXECUTION
+	fmt.Fprintf(os.Stderr, "[Agent] Step 3: Writing content to %s...\n", finalPath)
+
+	// Backup existing file if it is an overwrite (Archon Guard)
+	if _, err := os.Stat(finalPath); err == nil {
+		original, _ := os.ReadFile(finalPath)
+		os.WriteFile(finalPath+".bak", original, 0644)
+		fmt.Fprintf(os.Stderr, "[Archon Guard] Created backup at %s.bak\n", finalPath)
+	} else {
+		fmt.Fprintf(os.Stderr, "[Agent] Creating entirely new file: %s\n", finalPath)
 	}
 
-	log.Println("[Agent] Task completed successfully!")
+	// Write the new or overwritten file!
+	err = os.WriteFile(finalPath, []byte(newFileContent), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %v", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "[Agent] Task completed successfully!")
 	return nil
 }
 
-// parseSearchReplace extracts the exact code from the LLM's formatted output
-func parseSearchReplace(output string) (string, string, error) {
-	searchMarker := "<<<<SEARCH"
-	dividerMarker := "===="
-	replaceMarker := ">>>>REPLACE"
-
-	startIdx := strings.Index(output, searchMarker)
-	divIdx := strings.Index(output, dividerMarker)
-	endIdx := strings.Index(output, replaceMarker)
-
-	if startIdx == -1 || divIdx == -1 || endIdx == -1 {
-		return "", "", errors.New("LLM did not output proper SEARCH/REPLACE formatting markers")
+// parseFileResponse robustly extracts the filename and code block from the LLM output
+func parseFileResponse(output string) (string, string, error) {
+	lines := strings.SplitN(output, "\n", 2)
+	if len(lines) < 2 {
+		return "", "", fmt.Errorf("LLM output format invalid, could not find content")
 	}
 
-	// Extract the blocks and trim the leading/trailing newlines added by the formatting
-	searchBlock := output[startIdx+len(searchMarker) : divIdx]
-	replaceBlock := output[divIdx+len(dividerMarker) : endIdx]
+	// Parse the filename
+	filename := strings.TrimSpace(strings.TrimPrefix(lines[0], "FILE:"))
+	filename = strings.Trim(filename, "`*\"' ")
 
-	searchBlock = strings.TrimPrefix(searchBlock, "\n")
-	searchBlock = strings.TrimSuffix(searchBlock, "\n")
-	replaceBlock = strings.TrimPrefix(replaceBlock, "\n")
-	replaceBlock = strings.TrimSuffix(replaceBlock, "\n")
+	if filename == "" {
+		return "", "", fmt.Errorf("LLM failed to specify a filename")
+	}
 
-	return searchBlock, replaceBlock, nil
+	content := lines[1]
+
+	// Extract the code from the markdown block
+	startMarker := "```"
+	startIdx := strings.Index(content, startMarker)
+	if startIdx != -1 {
+		// skip the language identifier (e.g., ```javascript)
+		nlIdx := strings.Index(content[startIdx:], "\n")
+		if nlIdx != -1 {
+			startContent := startIdx + nlIdx + 1
+			endIdx := strings.LastIndex(content, "```")
+			if endIdx > startContent {
+				// FIXED: Returning all 3 arguments (filename, content, error)
+				return filename, strings.TrimSpace(content[startContent:endIdx]), nil
+			}
+			// FIXED: Returning all 3 arguments
+			return filename, strings.TrimSpace(content[startContent:]), nil
+		}
+	}
+
+	// Absolute fallback
+	// FIXED: Returning all 3 arguments
+	return filename, strings.TrimSpace(content), nil
 }
