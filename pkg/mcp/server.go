@@ -46,11 +46,15 @@ func StartServer(agent *arch.Agent) {
 		// Route the command
 		switch req.Method {
 		case "refactor":
-			err := agent.Orchestrate(req.Params.File, req.Params.Prompt)
+			targetPath, newContent, err := agent.Orchestrate(req.Params.File, req.Params.Prompt)
 			if err != nil {
 				sendError(req.ID, err.Error())
 			} else {
-				sendResult(req.ID, "Surgical edit applied successfully.")
+				// Send the path and the proposed code back to VS Code!
+				sendResult(req.ID, map[string]string{
+					"file":    targetPath,
+					"content": newContent,
+				})
 			}
 		default:
 			sendError(req.ID, fmt.Sprintf("Method '%s' not supported", req.Method))
